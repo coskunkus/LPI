@@ -1,117 +1,112 @@
 ##############################################################
-# LPI3Weibull PACKAGE CODE (Application Mode)
-# Formula: Index = (Median - L) / MAD
+# LPI3Weibull
 # Distribution: Weibull (shape, scale)
-###############################################################
-
-library(boot)
-library(DT)
-library(htmltools)
+# Formula: (Median - L) / MAD
+##############################################################
 
 ###############################################################
-# 1. Internal: Weibull MLE Helper
+# 1. Internal: MLE Helper
 ###############################################################
 
 LPI3Weibull_mle_helper <- function(x){
 
-  # Weibull Log-Likelihood
   nll <- function(par){
-    k <- par[1]; lam <- par[2] # shape, scale
+    k   <- par[1]
+    lam <- par[2]
     if(k <= 0 || lam <= 0) return(1e10)
     -sum(dweibull(x, shape=k, scale=lam, log=TRUE))
   }
 
-  # Ba??lang???? de??erleri (Heuristic)
   fit <- nlm(nll, p=c(1.2, mean(x)), hessian=TRUE)
-  k_hat <- fit$estimate[1]
-  lam_hat <- fit$estimate[2]
-  vcov_mat <- solve(fit$hessian)
 
-  list(shape=k_hat, scale=lam_hat, vcov=vcov_mat)
+  list(
+    shape = fit$estimate[1],
+    scale = fit$estimate[2],
+    vcov  = solve(fit$hessian)
+  )
 }
 
 ###############################################################
-# 2. Internal: Point Estimation (MLE)
+# 2. Point Estimation
 ###############################################################
 
 LPI3Weibull_point_est <- function(x, L){
 
   out <- LPI3Weibull_mle_helper(x)
-  k <- out$shape; lam <- out$scale
+  k   <- out$shape
+  lam <- out$scale
 
-  # 1. Medyan (Q2) = scale * (ln(2))^(1/shape)
   Qmed <- lam * (log(2))^(1/k)
 
-  # 2. Teorik MAD (Weibull i??in N??merik ????z??m)
-  mad_func <- function(m_val, k, lam, med_val){
-    lower <- med_val - m_val
+  mad_func <- function(m){
+    lower <- Qmed - m
     if(lower < 0) lower <- 0
 
-    p_upper <- pweibull(med_val + m_val, shape=k, scale=lam)
-    p_lower <- pweibull(lower, shape=k, scale=lam)
-
-    return((p_upper - p_lower) - 0.5)
+    pweibull(Qmed + m, shape=k, scale=lam) -
+      pweibull(lower, shape=k, scale=lam) - 0.5
   }
 
-  # K??k bulma (Hata korumal??)
-  try_root <- try(uniroot(mad_func, interval=c(0, Qmed*10), k=k, lam=lam, med_val=Qmed), silent=TRUE)
+  root_try <- try(uniroot(mad_func, c(0, Qmed*10)), silent=TRUE)
 
-  if(inherits(try_root, "try-error")){
+  if(inherits(root_try, "try-error")){
     return(list(Value=NA, shape=k, scale=lam, vcov=out$vcov))
   }
 
-  MAD_theoretical <- try_root$root
+  MAD_val <- root_try$root
 
-  # FORM??L: (Median - L) / MAD
-  Val <- (Qmed - L) / MAD_theoretical
+  Val <- (Qmed - L) / MAD_val
 
   list(Value=Val, shape=k, scale=lam, vcov=out$vcov)
 }
 
 ###############################################################
-# 3. Internal: Asymptotic CI (Numerical Gradient)
+# 3. Asymptotic CI
 ###############################################################
 
 LPI3Weibull_asymptotic <- function(x, L, alpha=0.05){
 
   out <- LPI3Weibull_point_est(x, L)
-  if(is.na(out$Value)) return(list(Value=NA, SE=NA, LCL=NA, UCL=NA))
+  if(is.na(out$Value))
+    return(list(Value=NA, SE=NA, LCL=NA, UCL=NA))
 
-  k_hat <- out$shape; lam_hat <- out$scale; V <- out$vcov
+  k_hat   <- out$shape
+  lam_hat <- out$scale
+  V       <- out$vcov
   IndexVal <- out$Value
 
-  # Endeks Fonksiyonu (T??rev i??in)
-  index_fun <- function(pars){
-    k <- pars[1]; lam <- pars[2]
-    if(k<=0 || lam<=0) return(NA)
+  index_fun <- function(par){
 
-    qm <- lam * (log(2))^(1/k)
+    k   <- par[1]
+    lam <- par[2]
+    if(k <= 0 || lam <= 0) return(NA)
 
-    mad_f <- function(m, k, lam, med){
-      low <- med - m; if(low<0) low <- 0
-      pweibull(med+m, shape=k, scale=lam) - pweibull(low, shape=k, scale=lam) - 0.5
+    Qmed <- lam * (log(2))^(1/k)
+
+    mad_f <- function(m){
+      lower <- Qmed - m
+      if(lower < 0) lower <- 0
+      pweibull(Qmed + m, shape=k, scale=lam) -
+        pweibull(lower, shape=k, scale=lam) - 0.5
     }
 
-    res <- try(uniroot(mad_f, c(0, qm*10), k=k, lam=lam, med=qm)$root, silent=TRUE)
-    if(inherits(res, "try-error")) return(NA)
+    root_try <- try(uniroot(mad_f, c(0, Qmed*10)), silent=TRUE)
+    if(inherits(root_try, "try-error")) return(NA)
 
-    return( (qm - L) / res )
+    (Qmed - L) / root_try$root
   }
 
-  # N??merik T??rev
-  my_grad <- function(func, p){
-    eps <- 1e-5
-    v1 <- func(c(p[1]+eps, p[2])); v2 <- func(c(p[1]-eps, p[2]))
-    dk <- (v1-v2)/(2*eps)
-    v3 <- func(c(p[1], p[2]+eps)); v4 <- func(c(p[1], p[2]-eps))
-    dlam <- (v3-v4)/(2*eps)
-    return(c(dk, dlam))
-  }
+  eps <- 1e-5
 
-  grad_vec <- my_grad(index_fun, c(k_hat, lam_hat))
+  d_k <- (index_fun(c(k_hat+eps, lam_hat)) -
+            index_fun(c(k_hat-eps, lam_hat))) / (2*eps)
 
-  varI <- t(grad_vec) %*% V %*% grad_vec
-  seI <- sqrt(varI)
+  d_lam <- (index_fun(c(k_hat, lam_hat+eps)) -
+              index_fun(c(k_hat, lam_hat-eps))) / (2*eps)
+
+  grad <- c(d_k, d_lam)
+
+  varI <- t(grad) %*% V %*% grad
+  seI  <- sqrt(varI)
 
   CI <- c(IndexVal - qnorm(1-alpha/2)*seI,
           IndexVal + qnorm(1-alpha/2)*seI)
@@ -120,39 +115,23 @@ LPI3Weibull_asymptotic <- function(x, L, alpha=0.05){
 }
 
 ###############################################################
-# 4. Internal: Bootstrap CI (Robust BCa)
+# 4. Bootstrap
 ###############################################################
-#' LPI3Weibull
-#' @export
-#' @param x random sample
-#' @param L lower bound
-#' @param R the number of boostrap sample
-#' @param alpha confidence level
-#'  LPI3Weibull(x, L, R, alpha)
-LPI3Weibull_boot_worker <- function(data, indices, L){
-  x <- data[indices]
-  val <- try(LPI3Weibull_point_est(x, L)$Value, silent=TRUE)
-  if(inherits(val, "try-error")) return(NA)
-  return(val)
-}
 
 LPI3Weibull_bootstrap <- function(x, R=2000, L, alpha=0.05){
 
   boot_stat <- function(data, indices){
-    LPI3Weibull_boot_worker(data, indices, L)
+    xx <- data[indices]
+    LPI3Weibull_point_est(xx, L)$Value
   }
 
-  b <- boot(data=x, statistic=boot_stat, R=R)
+  b <- boot::boot(data=x, statistic=boot_stat, R=R)
 
-  # Robust CI Calculation with custom alpha
-  ci <- tryCatch({
-    boot.ci(b, conf = (1-alpha), type=c("norm","basic","perc","bca"))
-  }, error = function(e) {
-    warning("BCa aral?????? hesaplanamad??. Di??er aral??klar sunuluyor.")
-    tryCatch({
-      boot.ci(b, conf = (1-alpha), type=c("norm","basic","perc"))
-    }, error = function(e2) NULL)
-  })
+  ci <- tryCatch(
+    boot::boot.ci(b, conf=1-alpha,
+                  type=c("norm","basic","perc","bca")),
+    error=function(e) NULL
+  )
 
   norm_bounds  <- c(NA, NA)
   basic_bounds <- c(NA, NA)
@@ -176,124 +155,53 @@ LPI3Weibull_bootstrap <- function(x, R=2000, L, alpha=0.05){
 }
 
 ###############################################################
-# 5. Internal: Nonparametric Method (Sample MAD)
+# 5. Nonparametric
 ###############################################################
 
 LPI3Weibull_nonparam <- function(x, L, alpha=0.05){
+
   samp_med <- median(x)
-  samp_mad <- mad(x, center = samp_med, constant = 1)
+  samp_mad <- mad(x, center=samp_med, constant=1)
 
   IndexVal <- (samp_med - L) / samp_mad
 
-  # Non-param Bootstrap
   boots <- replicate(1000, {
     xx <- sample(x, replace=TRUE)
-    m <- median(xx)
+    m  <- median(xx)
     md <- mad(xx, center=m, constant=1)
     if(md==0) return(NA)
     (m - L)/md
   })
 
   seI <- sd(boots, na.rm=TRUE)
-  CI <- quantile(boots, probs=c(alpha/2, 1-alpha/2), na.rm=TRUE)
+  CI  <- quantile(boots,
+                  probs=c(alpha/2, 1-alpha/2),
+                  na.rm=TRUE)
 
-  list(Value=IndexVal, SE=seI, LCL=CI[1], UCL=CI[2])
+  list(Value=IndexVal, SE=seI,
+       LCL=CI[1], UCL=CI[2])
 }
 
 ###############################################################
-# 6. OUTPUT HELPER FUNCTIONS
+# 6. MAIN FUNCTION
 ###############################################################
 
-LPI3Weibull_print <- function(summary_table, x=NULL, alpha=0.05){
-
-  mleV   <- summary_table$Value[summary_table$Item=="MLE_Value"]
-  asymL  <- summary_table$Value[summary_table$Item=="Asymp_LCL"]
-  asymU  <- summary_table$Value[summary_table$Item=="Asymp_UCL"]
-
-  normL  <- summary_table$Value[summary_table$Item=="Boot_norm_LCL"]
-  normU  <- summary_table$Value[summary_table$Item=="Boot_norm_UCL"]
-  basicL <- summary_table$Value[summary_table$Item=="Boot_basic_LCL"]
-  basicU <- summary_table$Value[summary_table$Item=="Boot_basic_UCL"]
-  percL  <- summary_table$Value[summary_table$Item=="Boot_perc_LCL"]
-  percU  <- summary_table$Value[summary_table$Item=="Boot_perc_UCL"]
-  bcaL   <- summary_table$Value[summary_table$Item=="Boot_bca_LCL"]
-  bcaU   <- summary_table$Value[summary_table$Item=="Boot_bca_UCL"]
-
-  npV    <- summary_table$Value[summary_table$Item=="Nonpar_Value"]
-  npL    <- summary_table$Value[summary_table$Item=="Nonpar_LCL"]
-  npU    <- summary_table$Value[summary_table$Item=="Nonpar_UCL"]
-
-  cat("=====================================\n")
-  cat("     LPI3Weibull RESULTS\n")
-  cat(sprintf("     Confidence Level: %d%%\n", (1-alpha)*100))
-  cat("     Formula: (Median - L) / MAD\n")
-  cat("=====================================\n\n")
-
-  if(!is.null(x)){
-    mle_par <- LPI3Weibull_mle_helper(x)
-    cat(sprintf("   Shape (k_hat)  : %.4f\n", mle_par$shape))
-    cat(sprintf("   Scale (lam_hat): %.4f\n\n", mle_par$scale))
-  }
-
-  cat(sprintf("MLE Value              : %.4f\n\n", mleV))
-  cat(sprintf("Asymptotic CI          : ( %.4f , %.4f )\n", asymL, asymU))
-  cat(sprintf("Bootstrap Normal       : ( %.4f , %.4f )\n", normL, normU))
-  cat(sprintf("Bootstrap Basic        : ( %.4f , %.4f )\n", basicL, basicU))
-  cat(sprintf("Bootstrap Percent      : ( %.4f , %.4f )\n", percL, percU))
-  cat(sprintf("Bootstrap BCa          : ( %.4f , %.4f )\n", bcaL, bcaU))
-
-  cat(sprintf("\nNonparametric Value    : %.4f\n", npV))
-  cat(sprintf("Nonparametric CI       : ( %.4f , %.4f )\n", npL, npU))
-  cat("\n=====================================\n")
-}
-
-LPI3Weibull_viewer <- function(summary_table, x, alpha=0.05, explanation="LPI3Weibull Analysis") {
-
-  mle_par <- LPI3Weibull_mle_helper(x)
-  conf_text <- sprintf("Confidence Level: %d%%", (1-alpha)*100)
-
-  items <- c("Shape (k_hat)", "Scale (lam_hat)",
-             "MLE Value", "Asymptotic CI",
-             "Bootstrap Normal", "Bootstrap Basic", "Bootstrap Percent", "Bootstrap BCa",
-             "Nonparametric Value", "Nonparametric CI")
-
-  vals <- c(
-    sprintf("%.4f", mle_par$shape), sprintf("%.4f", mle_par$scale),
-    sprintf("%.4f", summary_table$Value[summary_table$Item=="MLE_Value"]),
-    sprintf("( %.4f , %.4f )", summary_table$Value[summary_table$Item=="Asymp_LCL"], summary_table$Value[summary_table$Item=="Asymp_UCL"]),
-    sprintf("( %.4f , %.4f )", summary_table$Value[summary_table$Item=="Boot_norm_LCL"], summary_table$Value[summary_table$Item=="Boot_norm_UCL"]),
-    sprintf("( %.4f , %.4f )", summary_table$Value[summary_table$Item=="Boot_basic_LCL"], summary_table$Value[summary_table$Item=="Boot_basic_UCL"]),
-    sprintf("( %.4f , %.4f )", summary_table$Value[summary_table$Item=="Boot_perc_LCL"], summary_table$Value[summary_table$Item=="Boot_perc_UCL"]),
-    sprintf("( %.4f , %.4f )", summary_table$Value[summary_table$Item=="Boot_bca_LCL"], summary_table$Value[summary_table$Item=="Boot_bca_UCL"]),
-    sprintf("%.4f", summary_table$Value[summary_table$Item=="Nonpar_Value"]),
-    sprintf("( %.4f , %.4f )", summary_table$Value[summary_table$Item=="Nonpar_LCL"], summary_table$Value[summary_table$Item=="Nonpar_UCL"])
-  )
-
-  df <- data.frame(Item = items, Value = vals, stringsAsFactors = FALSE)
-
-  explanation_html <- tags$div(
-    tags$h3("LPI3Weibull Summary", style="margin-bottom:5px;"),
-    tags$p(style="font-size:16px; color:#0056b3; font-weight:bold; margin-top:0px;",
-           explanation, paste0("(", conf_text, ")")),
-    tags$hr()
-  )
-
-  css_fix <- tags$style(HTML(".dataTables_wrapper { height: auto !important; overflow-y: hidden !important; } table.dataTable { width: 100% !important; }"))
-
-  return(browsable(tagList(css_fix, explanation_html, DT::datatable(df, rownames = FALSE, options = list(pageLength = nrow(df), scrollY = FALSE, paging = FALSE, dom = 't')))))
-}
-
-###############################################################
-# 7. MAIN FUNCTION: LPI3Weibull (Application Mode)
-###############################################################
-
+#' LPI3 Weibull Index
+#'
+#' Computes the LPI3 index under the Weibull distribution.
+#'
+#' @param x numeric vector
+#' @param L lower bound
+#' @param R number of bootstrap replications
+#' @param alpha significance level
+#' @return data frame of results
+#' @export
 LPI3Weibull <- function(x, L, R=1000, alpha=0.05){
 
-  # Estimates
-  mle     <- LPI3Weibull_point_est(x, L)
-  asym    <- LPI3Weibull_asymptotic(x, L, alpha=alpha)
-  bootci  <- LPI3Weibull_bootstrap(x, R=R, L, alpha=alpha)
-  nonpar  <- LPI3Weibull_nonparam(x, L, alpha=alpha)
+  mle    <- LPI3Weibull_point_est(x, L)
+  asym   <- LPI3Weibull_asymptotic(x, L, alpha)
+  bootci <- LPI3Weibull_bootstrap(x, R, L, alpha)
+  nonpar <- LPI3Weibull_nonparam(x, L, alpha)
 
   TAB <- data.frame(
     Item = c("MLE_Value",
@@ -309,14 +217,10 @@ LPI3Weibull <- function(x, L, R=1000, alpha=0.05){
       bootci$norm[1], bootci$norm[2],
       bootci$basic[1], bootci$basic[2],
       bootci$perc[1], bootci$perc[2],
-      bootci$bca[1],   bootci$bca[2],
+      bootci$bca[1], bootci$bca[2],
       nonpar$Value, nonpar$LCL, nonpar$UCL
     )
   )
-
-  # Output
-  LPI3Weibull_print(TAB, x, alpha=alpha)
-  print(LPI3Weibull_viewer(TAB, x, alpha=alpha))
 
   invisible(TAB)
 }

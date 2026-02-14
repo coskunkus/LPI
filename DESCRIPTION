@@ -1,11 +1,18 @@
 Package: LPI
-Title: What the Package Does (One Line, Title Case)
+Title: Statistical LPI Index Estimation Under Parametric Distributions
 Version: 0.0.0.9000
 Authors@R: 
-    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"))
-Description: What the package does (one paragraph).
-License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
-    license
+    c(
+      person("Coskun", "Kus", email = "coskunkus@gmail.com", role = c("aut", "cre")),
+      person("Fatma", "Zehra Avcioglu", role = "aut"),
+      person("Fatma", "Pinaralti", role = "aut"),
+      person("Gamze", "Oner", role = "aut")
+    )
+Description: Provides estimation of LPI-type indices under Gamma, Lognormal and Weibull distributions. 
+    The package includes maximum likelihood estimation, asymptotic confidence intervals 
+    via the delta method, bootstrap confidence intervals (normal, basic, percentile, BCa), 
+    and nonparametric estimators.
+License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
